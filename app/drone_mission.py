@@ -117,7 +117,7 @@ def execute_flight_mission(vehicle, target_loc, log_file):
     yaw_pid = PIDController(**Gains['Yaw'])
 
     print("Вертикальний зліт...")
-    takeoff_target_alt = 15.0
+    takeoff_target_alt = 5.0
     while True:
         current_alt = vehicle.location.global_relative_frame.alt
         alt_error = takeoff_target_alt - current_alt
@@ -129,7 +129,7 @@ def execute_flight_mission(vehicle, target_loc, log_file):
         if yaw_err < -180: yaw_err += 360
         yaw_out = 1500 + yaw_pid.update(yaw_err)
         
-        if current_alt > 14.5: 
+        if current_alt > 4.5: 
             break
             
         vehicle.channels.overrides = {
