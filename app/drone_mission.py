@@ -22,22 +22,23 @@ WIND_PARAMS = {
     'SIM_WIND_T_FREQ': 0.2 # Виправлена назва параметру SITL
 }
 
-# Коефіцієнти PID (налаштовані під плавніший політ)
+# Коефіцієнти PID (налаштовані під агресивне утримання і боротьбу з вітром)
 Gains = {
-    'Alt':   {'Kp': 3.0, 'Ki': 0.1, 'Kd': 5.0, 'iMax': 300}, 
-    'Pos':   {'Kp': 15.0, 'Ki': 0.05, 'Kd': 3.0, 'iMax': 200},
-    'Nav':   {'Kp': 15.0, 'Ki': 0.1,  'Kd': 5.0, 'iMax': 200},
-    'Yaw':   {'Kp': 3.0, 'Ki': 0.01, 'Kd': 0.5, 'iMax': 50}, # Новий ПІД-контролер для ідеального втримання курсу
+    'Alt':   {'Kp': 6.0, 'Ki': 0.6, 'Kd': 10.0, 'iMax': 400, 'iZone': 30.0}, 
+    'Pos':   {'Kp': 35.0, 'Ki': 0.8, 'Kd': 15.0, 'iMax': 400, 'iZone': 50.0},
+    'Nav':   {'Kp': 35.0, 'Ki': 0.8, 'Kd': 15.0, 'iMax': 400, 'iZone': 50.0},
+    'Yaw':   {'Kp': 3.0, 'Ki': 0.01, 'Kd': 0.5, 'iMax': 50, 'iZone': 20.0},
 }
 
 # --- КЛАС: PID КОНТРОЛЕР ---
 class PIDController:
-    def __init__(self, Kp, Ki, Kd, iMax=None):
+    def __init__(self, Kp, Ki, Kd, iMax=None, iZone=None):
         self.Kp, self.Ki, self.Kd, self.iMax = Kp, Ki, Kd, iMax
         
-        # Автоматичний розрахунок I-Zone
-        # Фіксована широка зона, щоб не скидати пам'ять вітру при маневрах
-        if self.Kp > 0:
+        # Налаштування зони інтеграції
+        if iZone is not None:
+            self.iZone = iZone
+        elif self.Kp > 0:
             self.iZone = 20.0 
         else:
             self.iZone = 0.0
