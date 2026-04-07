@@ -19,7 +19,7 @@ WIND_PARAMS = {
     'SIM_WIND_SPD': 5,
     'SIM_WIND_DIR': 30,
     'SIM_WIND_TURB': 2,
-    'SIM_WIND_T_FREQ': 0.2 # Виправлена назва параметру SITL
+    'SIM_WIND_T_FREQ': 0.2
 }
 
 # Коефіцієнти PID (налаштовані під агресивне утримання і боротьбу з вітром)
@@ -30,8 +30,13 @@ Gains = {
     'Yaw':   {'Kp': 3.0, 'Ki': 0.01, 'Kd': 0.5, 'iMax': 50, 'iZone': 20.0},
 }
 
-# --- КЛАС: PID КОНТРОЛЕР ---
+# --- КЛАС: ПІД-РЕГУЛЯТОР (PID CONTROLLER) ---
 class PIDController:
+    """
+    Власна імплементація Пропорційно-Інтегрально-Диференціального (PID) регулятора.
+    Адаптована для керування дроном: підтримує обмеження інтегратора (Anti-windup)
+    та мертву зону інтеграції (I-Zone) для уникнення розгойдування.
+    """
     def __init__(self, Kp, Ki, Kd, iMax=None, iZone=None):
         self.Kp, self.Ki, self.Kd, self.iMax = Kp, Ki, Kd, iMax
         
@@ -54,12 +59,12 @@ class PIDController:
         dt = time.time() - self._last_time
         if dt <= 0.0: dt = 1e-6
         
-        # Зонована інтеграція (I-Zone)
+        # Зонована інтеграція (I-Zone) для подолання зсуву вітру
         if self.iZone == 0.0 or abs(error) <= self.iZone:
             self._integrator += error * self.Ki * dt
             if self.iMax: self._integrator = max(-self.iMax, min(self.iMax, self._integrator))
         else:
-            self._integrator *= 0.95 # Плавне затухання замість жорсткого скидання до 0
+            self._integrator *= 0.95 # Плавне затухання (Leaky Integrator) при великих похибках
             
         if self._last_error is None:
             self._last_error = error
@@ -68,14 +73,16 @@ class PIDController:
         self._last_error, self._last_time = error, time.time()
         return output
 
-# --- НАВІГАЦІЙНА МАТЕМАТИКА (ВИПРАВЛЕНА ГЕОМЕТРІЯ ДЛЯ 50-ї ШИРОТИ) ---
+# --- НАВІГАЦІЙНА МАТЕМАТИКА ---
 def get_location_distance_meters(loc1, loc2):
+    """Обчислює відстань між двома координатами у метрах, використовуючи еквідистантну проекцію."""
     dlat = loc2.lat - loc1.lat
     # Компенсація довготи через косинус широти
     dlon = (loc2.lon - loc1.lon) * math.cos(math.radians((loc1.lat + loc2.lat) / 2.0))
     return math.sqrt((dlat**2) + (dlon**2)) * 1.113195e5
 
 def get_location_bearing(loc1, loc2):
+    """Обчислює азимут (bearing) від loc1 до loc2 у градусах (0-360)."""
     off_y = loc2.lat - loc1.lat
     # Компенсація довготи через косинус широти
     off_x = (loc2.lon - loc1.lon) * math.cos(math.radians((loc1.lat + loc2.lat) / 2.0))
@@ -84,11 +91,16 @@ def get_location_bearing(loc1, loc2):
     return bearing
 
 def normalize_angle(angle):
+    """Нормалізує кут до діапазону [-180, 180] градусів."""
     if angle > 180: return angle - 360
     if angle < -180: return angle + 360
     return angle
 
 def get_track_errors(home_loc, curr_loc, ideal_bearing, total_distance):
+    """
+    Повертає поздовжню похибку (відстань, яку залишилось пролетіти до цілі)
+    та поперечну похибку (XTE - відхилення від ідеальної прямої траєкторії).
+    """
     dist_from_home = get_location_distance_meters(home_loc, curr_loc)
     bearing_hc = get_location_bearing(home_loc, curr_loc)
     angle_diff_rad = math.radians(normalize_angle(bearing_hc - ideal_bearing))
@@ -97,6 +109,10 @@ def get_track_errors(home_loc, curr_loc, ideal_bearing, total_distance):
     return total_distance - dist_along, xte_err
 
 def calculate_attitude_pwm(out_fwd, out_side, ideal_bearing, vehicle_heading):
+    """
+    Перетворює требуємі імпульси вектора руху (out_fwd, out_side) у ШІМ канали (Roll, Pitch)
+    на основі поточного напрямку носа дрона відносно ідеального курсу польоту.
+    """
     diff_rad = math.radians(normalize_angle(ideal_bearing - vehicle_heading))
     pitch_offset = out_fwd * math.cos(diff_rad) - out_side * math.sin(diff_rad)
     roll_offset = out_fwd * math.sin(diff_rad) + out_side * math.cos(diff_rad)
@@ -104,6 +120,10 @@ def calculate_attitude_pwm(out_fwd, out_side, ideal_bearing, vehicle_heading):
 
 # --- ГОЛОВНА МІСІЯ ---
 def execute_flight_mission(vehicle, target_loc, log_file):
+    """
+    Основний цикл місії, розбитий на 3 фази: зліт, круїзний політ і фінальна посадка.
+    Керування здійснюється виключно через RC Overrides у режимі STABILIZE.
+    """
     print("\n--- СТАРТ ІНТЕЛЕКТУАЛЬНОЇ ПОЛЬОТНОЇ МІСІЇ ---")
     
     print("Готуємось до Arming...")
@@ -145,7 +165,7 @@ def execute_flight_mission(vehicle, target_loc, log_file):
         alt_error = takeoff_target_alt - current_alt
         thr = 1515 + alt_pid.update(alt_error)
         
-        # Утримання Yaw від вітру прямо на зльоті
+        # Активне утримання Yaw (спротив вітру під час зльоту)
         yaw_err = normalize_angle(initial_heading - vehicle.heading)
         yaw_out = 1500 + yaw_pid.update(yaw_err)
         
@@ -188,22 +208,22 @@ def execute_flight_mission(vehicle, target_loc, log_file):
             if dist_to_target < 200.0:
                 v_ideal = math.sqrt(2 * 1.5 * max(0.1, dist_to_target))
                 if vehicle.groundspeed > v_ideal:
-                    # Агресивне гальмування: множник 200.0 змусить його різко задерти ніс!
+                    # Агресивне гальмування: створюємо інтенсивний імпульс по Pitch для реверсу тяги
                     brake_force = (vehicle.groundspeed - v_ideal) * 200.0
                     out_fwd -= brake_force
 
-            # --- ГЕЛІКОПТЕРНИЙ ПРОФІЛЬ ---
-            # Визначаємо, скільки ще потрібно набрати до цільової висоти
+            # --- ГЕЛІКОПТЕРНИЙ ПРОФІЛЬ НАБОРУ ВИСОТИ ---
+            # Захист від надмірного крену. Поки висота < 250м, лімітуємо кут нахилу, щоб не втратити тягу
             true_alt_error = target_altitude - current_loc.alt
             
             if true_alt_error > 50.0:
-                # Якщо ми ще не набрали 250м -> обмежуємо розгін до 100 PWM
+                # Обмеження розгону до 100 PWM під час стрімкого набору висоти
                 max_pitch_roll = 100.0
             elif true_alt_error < 10.0:
-                # Якщо до ешелону залишилось менше 10м -> даємо повну тягу (400 PWM)
+                # Повна свобода маневрування (400 PWM) на цільовому ешелоні
                 max_pitch_roll = 400.0
             else:
-                # Плавна інтерполяція від 100 до 400 PWM між висотами 250м і 290м
+                # Плавна лінійна інтерполяція від 100 до 400 PWM між висотами 250м і 290м
                 proportion = (50.0 - true_alt_error) / 40.0
                 max_pitch_roll = 100.0 + (proportion * 300.0)
 
@@ -249,14 +269,15 @@ def execute_flight_mission(vehicle, target_loc, log_file):
         pos_pid.reset()
         nav_pid.reset()
         
-        # Піднімаємо I-term, щоб плавно і миттєво долати похибку від зсуву вітру (Wind Shear) при спуску
+        # Перехід у режим точного зависання: піднімаємо I-term, 
+        # щоб миттєво долати похибку від зсуву вітру (Wind Shear) при вертикальному спуску
         pos_pid.Ki = 3.0
         nav_pid.Ki = 3.0
         
         while vehicle.location.global_relative_frame.alt > 0.5:
             curr_loc = vehicle.location.global_relative_frame
             
-            # Поступовий спуск 2.5 м/с 
+            # Поступовий спуск: цільова висота зменшується на 0.25м кожні 0.1с (~2.5 м/с)
             landing_target_alt = max(0.0, landing_target_alt - 0.25)
             
             a_err = landing_target_alt - curr_loc.alt
