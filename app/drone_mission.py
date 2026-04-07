@@ -46,7 +46,7 @@ class PIDController:
         self.reset()
 
     def reset(self):
-        self._last_error = 0.0
+        self._last_error = None
         self._integrator = 0.0
         self._last_time = time.time()
 
@@ -60,6 +60,9 @@ class PIDController:
             if self.iMax: self._integrator = max(-self.iMax, min(self.iMax, self._integrator))
         else:
             self._integrator *= 0.95 # Плавне затухання замість жорсткого скидання до 0
+            
+        if self._last_error is None:
+            self._last_error = error
             
         output = error * self.Kp + self._integrator + (error - self._last_error) * self.Kd / dt
         self._last_error, self._last_time = error, time.time()
@@ -174,6 +177,15 @@ def execute_flight_mission(vehicle, target_loc, log_file):
             out_fwd = pos_pid.update(err_along)
             out_side = nav_pid.update(-xte_error)
 
+            # --- ПРЕЕМПТИВНЕ ГАЛЬМУВАННЯ ---
+            # Розрахунок безпечної швидкості (з уповільненням 1.5 м/с^2) для поточного відрізка
+            if dist_to_target < 200.0:
+                v_ideal = math.sqrt(2 * 1.5 * max(0.1, dist_to_target))
+                if vehicle.groundspeed > v_ideal:
+                    # Агресивне гальмування: множник 200.0 змусить його різко задерти ніс!
+                    brake_force = (vehicle.groundspeed - v_ideal) * 200.0
+                    out_fwd -= brake_force
+
             # --- ГЕЛІКОПТЕРНИЙ ПРОФІЛЬ ---
             # Визначаємо, скільки ще потрібно набрати до цільової висоти
             true_alt_error = target_altitude - current_loc.alt
@@ -232,12 +244,43 @@ def execute_flight_mission(vehicle, target_loc, log_file):
         print("\nПочинаємо фінальну посадку у точці Б...")
         landing_target_alt = current_loc.alt
         
-        # Не скидаємо pos_pid і nav_pid, щоб дрон пам'ятав силу вітру!
-        alt_pid.reset() # Скидаємо лише висоту, бо змінюється логіка цілі
+        # Базове скидання перед початком посадкового маневру
+        alt_pid.reset() 
         yaw_pid.reset()
+        pos_pid.reset()
+        nav_pid.reset()
+        
+        # Перехід у режим точного зависання: піднімаємо I-term, 
+        # щоб миттєво долати похибку від зсуву вітру (Wind Shear) при спуску
+        pos_pid.Ki = 3.0
+        nav_pid.Ki = 3.0
+        
+        # Прапорці фазового контролю (Адаптація до висотних шарів вітру)
+        wind_zone_150 = False
+        wind_zone_50 = False
+        wind_zone_10 = False
         
         while vehicle.location.global_relative_frame.alt > 0.5:
             curr_loc = vehicle.location.global_relative_frame
+            
+            # Каскадне скидання інтегратора під стихаючий приземний вітер
+            if curr_loc.alt < 150.0 and not wind_zone_150:
+                pos_pid.reset()
+                nav_pid.reset()
+                wind_zone_150 = True
+                print("\n[WIND SHEAR] Перетин ешелону 150м - Адаптація ПІД...")
+                
+            if curr_loc.alt < 50.0 and not wind_zone_50:
+                pos_pid.reset()
+                nav_pid.reset()
+                wind_zone_50 = True
+                print("\n[WIND SHEAR] Перетин ешелону 50м - Адаптація ПІД...")
+                
+            if curr_loc.alt < 10.0 and not wind_zone_10:
+                pos_pid.reset()
+                nav_pid.reset()
+                wind_zone_10 = True
+                print("\n[WIND SHEAR] Перетин ешелону 10м (Фінальна посадка) - Адаптація ПІД...")
             
             # Поступовий спуск 2.5 м/с 
             landing_target_alt = max(0.0, landing_target_alt - 0.25)
