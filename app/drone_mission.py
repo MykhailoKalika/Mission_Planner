@@ -124,7 +124,7 @@ def execute_flight_mission(vehicle, target_loc, log_file):
     Основний цикл місії, розбитий на 3 фази: зліт, круїзний політ і фінальна посадка.
     Керування здійснюється виключно через RC Overrides у режимі STABILIZE.
     """
-    print("\n--- СТАРТ ІНТЕЛЕКТУАЛЬНОЇ ПОЛЬОТНОЇ МІСІЇ ---")
+    print("\n--- СТАРТ АВТОНОМНОЇ ПОЛЬОТНОЇ МІСІЇ ---")
     
     print("Готуємось до Arming...")
     vehicle.mode = VehicleMode("STABILIZE")
@@ -317,7 +317,7 @@ def execute_flight_mission(vehicle, target_loc, log_file):
             print("  Чекаємо на зупинку гвинтів...", end='\r')
             time.sleep(1)
             
-        print("\n[FINISH] Двигуни зупинено. Місія виконана на 100%!")
+        print("\n[FINISH] Двигуни зупинено. Місію виконано.")
 
     except Exception as e:
         error_message = f"\n[FATAL] Помилка в циклі керування: {e}"
