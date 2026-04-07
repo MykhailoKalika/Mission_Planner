@@ -258,7 +258,6 @@ def execute_flight_mission(vehicle, target_loc, log_file):
         # Прапорці фазового контролю (Адаптація до висотних шарів вітру)
         wind_zone_150 = False
         wind_zone_50 = False
-        wind_zone_10 = False
         
         while vehicle.location.global_relative_frame.alt > 0.5:
             curr_loc = vehicle.location.global_relative_frame
@@ -275,12 +274,6 @@ def execute_flight_mission(vehicle, target_loc, log_file):
                 nav_pid.reset()
                 wind_zone_50 = True
                 print("\n[WIND SHEAR] Перетин ешелону 50м - Адаптація ПІД...")
-                
-            if curr_loc.alt < 10.0 and not wind_zone_10:
-                pos_pid.reset()
-                nav_pid.reset()
-                wind_zone_10 = True
-                print("\n[WIND SHEAR] Перетин ешелону 10м (Фінальна посадка) - Адаптація ПІД...")
             
             # Поступовий спуск 2.5 м/с 
             landing_target_alt = max(0.0, landing_target_alt - 0.25)
