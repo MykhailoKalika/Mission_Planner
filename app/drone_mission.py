@@ -83,6 +83,25 @@ def get_location_bearing(loc1, loc2):
     if bearing < 0: bearing += 360.00
     return bearing
 
+def normalize_angle(angle):
+    if angle > 180: return angle - 360
+    if angle < -180: return angle + 360
+    return angle
+
+def get_track_errors(home_loc, curr_loc, ideal_bearing, total_distance):
+    dist_from_home = get_location_distance_meters(home_loc, curr_loc)
+    bearing_hc = get_location_bearing(home_loc, curr_loc)
+    angle_diff_rad = math.radians(normalize_angle(bearing_hc - ideal_bearing))
+    dist_along = dist_from_home * math.cos(angle_diff_rad)
+    xte_err = dist_from_home * math.sin(angle_diff_rad)
+    return total_distance - dist_along, xte_err
+
+def calculate_attitude_pwm(out_fwd, out_side, ideal_bearing, vehicle_heading):
+    diff_rad = math.radians(normalize_angle(ideal_bearing - vehicle_heading))
+    pitch_offset = out_fwd * math.cos(diff_rad) - out_side * math.sin(diff_rad)
+    roll_offset = out_fwd * math.sin(diff_rad) + out_side * math.cos(diff_rad)
+    return max(1150, min(1850, 1500 - pitch_offset)), max(1150, min(1850, 1500 + roll_offset))
+
 # --- ГОЛОВНА МІСІЯ ---
 def execute_flight_mission(vehicle, target_loc, log_file):
     print("\n--- СТАРТ ІНТЕЛЕКТУАЛЬНОЇ ПОЛЬОТНОЇ МІСІЇ ---")
@@ -127,9 +146,7 @@ def execute_flight_mission(vehicle, target_loc, log_file):
         thr = 1515 + alt_pid.update(alt_error)
         
         # Утримання Yaw від вітру прямо на зльоті
-        yaw_err = initial_heading - vehicle.heading
-        if yaw_err > 180: yaw_err -= 360
-        if yaw_err < -180: yaw_err += 360
+        yaw_err = normalize_angle(initial_heading - vehicle.heading)
         yaw_out = 1500 + yaw_pid.update(yaw_err)
         
         if current_alt > 4.5: 
@@ -161,18 +178,7 @@ def execute_flight_mission(vehicle, target_loc, log_file):
             current_loc = vehicle.location.global_relative_frame
             dist_to_target = get_location_distance_meters(current_loc, target_loc)
             
-            dist_from_home = get_location_distance_meters(home_loc, current_loc)
-            bearing_hc = get_location_bearing(home_loc, current_loc)
-            
-            angle_diff = bearing_hc - ideal_bearing
-            if angle_diff > 180: angle_diff -= 360
-            if angle_diff < -180: angle_diff += 360
-            angle_diff_rad = math.radians(angle_diff)
-
-            # Проекція на ідеальну лінію
-            dist_along = dist_from_home * math.cos(angle_diff_rad)
-            err_along = total_distance - dist_along
-            xte_error = dist_from_home * math.sin(angle_diff_rad)
+            err_along, xte_error = get_track_errors(home_loc, current_loc, ideal_bearing, total_distance)
 
             out_fwd = pos_pid.update(err_along)
             out_side = nav_pid.update(-xte_error)
@@ -205,12 +211,7 @@ def execute_flight_mission(vehicle, target_loc, log_file):
             out_side = max(-max_pitch_roll, min(max_pitch_roll, out_side))
 
             # Трансформація координат
-            diff_rad = math.radians(ideal_bearing - vehicle.heading)
-            pitch_offset = out_fwd * math.cos(diff_rad) - out_side * math.sin(diff_rad)
-            roll_offset = out_fwd * math.sin(diff_rad) + out_side * math.cos(diff_rad)
-
-            pitch_pwm = max(1150, min(1850, 1500 - pitch_offset))
-            roll_pwm = max(1150, min(1850, 1500 + roll_offset))
+            pitch_pwm, roll_pwm = calculate_attitude_pwm(out_fwd, out_side, ideal_bearing, vehicle.heading)
 
             if dist_to_target < 4.0:
                 print("\n[FINISH] Ціль досягнута. Перехід до посадки...")
@@ -224,9 +225,7 @@ def execute_flight_mission(vehicle, target_loc, log_file):
             thr_pwm = 1500 + alt_pid.update(alt_error)
 
             # Активне утримання ідеального Yaw
-            yaw_err = initial_heading - vehicle.heading
-            if yaw_err > 180: yaw_err -= 360
-            if yaw_err < -180: yaw_err += 360
+            yaw_err = normalize_angle(initial_heading - vehicle.heading)
             yaw_out = 1500 + yaw_pid.update(yaw_err)
             
             overrides = {
@@ -250,30 +249,12 @@ def execute_flight_mission(vehicle, target_loc, log_file):
         pos_pid.reset()
         nav_pid.reset()
         
-        # Перехід у режим точного зависання: піднімаємо I-term, 
-        # щоб миттєво долати похибку від зсуву вітру (Wind Shear) при спуску
+        # Піднімаємо I-term, щоб плавно і миттєво долати похибку від зсуву вітру (Wind Shear) при спуску
         pos_pid.Ki = 3.0
         nav_pid.Ki = 3.0
         
-        # Прапорці фазового контролю (Адаптація до висотних шарів вітру)
-        wind_zone_150 = False
-        wind_zone_50 = False
-        
         while vehicle.location.global_relative_frame.alt > 0.5:
             curr_loc = vehicle.location.global_relative_frame
-            
-            # Каскадне скидання інтегратора під стихаючий приземний вітер
-            if curr_loc.alt < 150.0 and not wind_zone_150:
-                pos_pid.reset()
-                nav_pid.reset()
-                wind_zone_150 = True
-                print("\n[WIND SHEAR] Перетин ешелону 150м - Адаптація ПІД...")
-                
-            if curr_loc.alt < 50.0 and not wind_zone_50:
-                pos_pid.reset()
-                nav_pid.reset()
-                wind_zone_50 = True
-                print("\n[WIND SHEAR] Перетин ешелону 50м - Адаптація ПІД...")
             
             # Поступовий спуск 2.5 м/с 
             landing_target_alt = max(0.0, landing_target_alt - 0.25)
@@ -281,17 +262,7 @@ def execute_flight_mission(vehicle, target_loc, log_file):
             a_err = landing_target_alt - curr_loc.alt
             thr_pwm = 1495 + alt_pid.update(a_err)
             
-            dist_from_home = get_location_distance_meters(home_loc, curr_loc)
-            bearing_hc = get_location_bearing(home_loc, curr_loc)
-            
-            angle_diff = bearing_hc - ideal_bearing
-            if angle_diff > 180: angle_diff -= 360
-            if angle_diff < -180: angle_diff += 360
-            angle_diff_rad = math.radians(angle_diff)
-
-            dist_along = dist_from_home * math.cos(angle_diff_rad)
-            err_along = total_distance - dist_along
-            xte_err = dist_from_home * math.sin(angle_diff_rad)
+            err_along, xte_err = get_track_errors(home_loc, curr_loc, ideal_bearing, total_distance)
 
             out_fwd = pos_pid.update(err_along)
             out_fwd = max(-400, min(400, out_fwd))
@@ -299,16 +270,9 @@ def execute_flight_mission(vehicle, target_loc, log_file):
             out_side = nav_pid.update(-xte_err)
             out_side = max(-400, min(400, out_side))
 
-            diff_rad = math.radians(ideal_bearing - vehicle.heading)
-            pitch_offset = out_fwd * math.cos(diff_rad) - out_side * math.sin(diff_rad)
-            roll_offset = out_fwd * math.sin(diff_rad) + out_side * math.cos(diff_rad)
+            pitch_pwm, roll_pwm = calculate_attitude_pwm(out_fwd, out_side, ideal_bearing, vehicle.heading)
 
-            pitch_pwm = max(1150, min(1850, 1500 - pitch_offset))
-            roll_pwm = max(1150, min(1850, 1500 + roll_offset))
-
-            yaw_err = initial_heading - vehicle.heading
-            if yaw_err > 180: yaw_err -= 360
-            if yaw_err < -180: yaw_err += 360
+            yaw_err = normalize_angle(initial_heading - vehicle.heading)
             yaw_out = 1500 + yaw_pid.update(yaw_err)
             
             vehicle.channels.overrides = {
